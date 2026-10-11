@@ -12,11 +12,16 @@ Format du JSON :
     {
       "updated": "2026-10-11T03:20:00Z",
       "q": { "SPX": {"p": 5800.1, "c": 0.45, "t": 1760000000, "u": "USD", "s": [..22 clôtures..]}, ... },
+      "pol": { "FED": {"lo": 4.0, "hi": 4.25, "since": "2025-12-10", "asof": "2026-10-09"},
+               "BCE": {"dfr": 2.0, "mrr": 2.15, "since": "2025-06-11", "asof": "2026-10-09"} },
       "news": [ {"title": "...", "url": "https://...", "src": "Le Monde", "ts": 1760000000, "img": "https://..."} ],
       "errors": ["JSE", ...]
     }
     p = dernier cours · c = variation du jour en % · t = heure du cours (epoch)
     u = devise · s = clôtures quotidiennes sur ~1 mois (mini-graphique)
+    Taux 10 ans (US10, FR10...) : p = rendement en %, d = variation en points de %,
+    k = "y", m = 1 si moyenne mensuelle (secours FRED), dt = date de la donnée.
+    pol = taux directeurs (source : FRED, séries FED et BCE).
 
 AUCUNE valeur inventée : un actif sans réponse garde son DERNIER cours réel
 connu (avec son heure d'origine) pendant 5 jours maximum, puis disparaît.
@@ -29,13 +34,17 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import csv
+import io
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 
 YAHOO_BASE = os.environ.get("YAHOO_BASE", "https://query1.finance.yahoo.com").rstrip("/")
 YAHOO_ALT = os.environ.get("YAHOO_ALT", "https://query2.finance.yahoo.com").rstrip("/")
+STOOQ_BASE = os.environ.get("STOOQ_BASE", "https://stooq.com").rstrip("/")
+FRED_BASE = os.environ.get("FRED_BASE", "https://fred.stlouisfed.org").rstrip("/")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 MAX_CARRY_S = 5 * 24 * 3600  # on garde un ancien cours réel 5 jours maximum
@@ -52,8 +61,11 @@ SYMBOLS = {
     "EURUSD": "EURUSD=X", "USDJPY": "JPY=X", "GBPUSD": "GBPUSD=X",
     "USDCHF": "CHF=X", "AUDUSD": "AUDUSD=X", "USDCAD": "CAD=X",
     # Matières premières
-    "WTI": "CL=F", "BRENT": "BZ=F", "GOLD": "GC=F", "SILVER": "SI=F",
-    "COPPER": "HG=F", "WHEAT": "ZW=F", "NATGAS": "NG=F",
+    "WTI": "CL=F", "BRENT": "BZ=F", "NATGAS": "NG=F", "TTF": "TTF=F", "COAL": "MTF=F",
+    "GOLD": "GC=F", "SILVER": "SI=F", "COPPER": "HG=F", "PALLAD": "PA=F",
+    "WHEAT": "ZW=F", "SUGAR": "SB=F", "COFFEE": "KC=F", "CORN": "ZC=F",
+    # Indice de la peur
+    "VIX": "^VIX",
     # Cryptos (secours : la page interroge CoinGecko en direct)
     "BTC": "BTC-USD", "ETH": "ETH-USD", "BNB": "BNB-USD",
     "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD",
@@ -62,6 +74,19 @@ SYMBOLS = {
     "TSLA": "TSLA", "GOOGL": "GOOGL", "MC": "MC.PA", "TTE": "TTE.PA",
     "AIR": "AIR.PA", "SAP": "SAP.DE", "ASML": "ASML.AS", "7203": "7203.T",
 }
+
+# Taux 10 ans : (stooq, FRED quotidien, FRED mensuel, Yahoo)
+YIELDS = {
+    "US10": ("10usy.b", "DGS10", "IRLTLT01USM156N", "^TNX"),
+    "FR10": ("10fry.b", None, "IRLTLT01FRM156N", None),
+    "DE10": ("10dey.b", None, "IRLTLT01DEM156N", None),
+    "IT10": ("10ity.b", None, "IRLTLT01ITM156N", None),
+    "ES10": ("10esy.b", None, "IRLTLT01ESM156N", None),
+    "JP10": ("10jpy.b", None, "IRLTLT01JPM156N", None),
+    "UK10": ("10uky.b", None, "IRLTLT01GBM156N", None),
+}
+# Taux directeurs (FRED) : FED = fourchette cible haute/basse ; BCE = dépôt / refinancement
+POLICY = {"FED": ("DFEDTARL", "DFEDTARU"), "BCE": ("ECBDFR", "ECBMRRFR")}
 
 # Flux RSS (en français). Un flux en panne est simplement ignoré.
 FEEDS = [
@@ -183,6 +208,119 @@ def previous_file(path_out):
 
 
 # --------------------------------------------------------------------------
+# Taux 10 ans et taux directeurs (Stooq / FRED, sans clé)
+# --------------------------------------------------------------------------
+def _num(x):
+    try:
+        v = float(str(x).strip())
+        return v if v == v else None
+    except ValueError:
+        return None
+
+
+def stooq_series(sym):
+    """[(date, clôture)] des ~45 derniers jours, ou []."""
+    d2 = datetime.now(timezone.utc).date()
+    d1 = d2 - timedelta(days=45)
+    url = "%s/q/d/l/?s=%s&i=d&d1=%s&d2=%s" % (STOOQ_BASE, sym, d1.strftime("%Y%m%d"), d2.strftime("%Y%m%d"))
+    raw = http_get(url, tries=2)
+    if not raw:
+        return []
+    rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
+    if not rows or [c.strip().lower() for c in rows[0][:1]] != ["date"]:
+        return []
+    out = []
+    for r in rows[1:]:
+        v = _num(r[4]) if len(r) > 4 else None
+        if v is not None:
+            out.append((r[0], v))
+    return out
+
+
+def fred_series(series_id, days=60):
+    """[(date, valeur)] ; ignore les valeurs manquantes (« . »)."""
+    start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    raw = http_get("%s/graph/fredgraph.csv?id=%s&cosd=%s" % (FRED_BASE, series_id, start), tries=2)
+    if not raw:
+        return []
+    rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
+    out = []
+    for r in rows[1:]:
+        v = _num(r[1]) if len(r) > 1 else None
+        if v is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", r[0]):
+            out.append((r[0], v))
+    return out
+
+
+def day_ts(d):
+    try:
+        return int(datetime.strptime(d, "%Y-%m-%d").replace(hour=16, tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return int(time.time())
+
+
+def yield_quote(pairs, monthly=False):
+    if not pairs:
+        return None
+    vals = [v for _, v in pairs]
+    q = {"p": round(vals[-1], 4), "t": day_ts(pairs[-1][0]), "k": "y", "dt": pairs[-1][0]}
+    if len(vals) >= 2:
+        q["d"] = round(vals[-1] - vals[-2], 4)
+    if len(vals) >= 3:
+        q["s"] = [round(v, 4) for v in vals][-SPARK_POINTS:]
+    if monthly:
+        q["m"] = 1
+    return q
+
+
+def fetch_yield(ident):
+    stooq, fred_d, fred_m, yahoo = YIELDS[ident]
+    q = yield_quote(stooq_series(stooq))
+    if q:
+        return q
+    if fred_d:
+        q = yield_quote(fred_series(fred_d))
+        if q:
+            return q
+    if yahoo:
+        y = fetch_quote(yahoo)
+        if y and y.get("p") is not None:
+            p = y["p"] / 10.0 if y["p"] > 25 else y["p"]  # ^TNX : parfois en dixièmes
+            k = (10.0 if y["p"] > 25 else 1.0)
+            out = {"p": round(p, 4), "t": y.get("t", int(time.time())), "k": "y", "dt": datetime.now(timezone.utc).date().isoformat()}
+            if "c" in y:
+                out["d"] = round(p - p / (1 + y["c"] / 100.0), 4)
+            if y.get("s"):
+                out["s"] = [round(v / k, 4) for v in y["s"]]
+            return out
+    return yield_quote(fred_series(fred_m, days=200), monthly=True)
+
+
+def last_change(pairs):
+    """Date à laquelle la valeur actuelle est entrée en vigueur (ou None)."""
+    if not pairs:
+        return None
+    cur = pairs[-1][1]
+    for i in range(len(pairs) - 1, 0, -1):
+        if abs(pairs[i - 1][1] - cur) > 1e-9:
+            return pairs[i][0]
+    return None
+
+
+def fetch_policy():
+    out = {}
+    for name, (a, b) in POLICY.items():
+        pa, pb = fred_series(a, days=900), fred_series(b, days=900)
+        if not pa or not pb:
+            continue
+        if name == "FED":
+            out[name] = {"lo": pa[-1][1], "hi": pb[-1][1], "since": last_change(pb), "asof": pb[-1][0]}
+        else:
+            out[name] = {"dfr": pa[-1][1], "mrr": pb[-1][1], "since": last_change(pa), "asof": pa[-1][0]}
+    return out
+
+
+# --------------------------------------------------------------------------
 # Actualités (flux RSS)
 # --------------------------------------------------------------------------
 MEDIA_NS = "{http://search.yahoo.com/mrss/}"
@@ -273,6 +411,23 @@ def main(path_out):
         time.sleep(0.35)  # politesse envers Yahoo
 
     fresh = len(SYMBOLS) - len(errors)
+
+    for ident in YIELDS:
+        q = fetch_yield(ident)
+        if q is None:
+            old = prev_q.get(ident)
+            if isinstance(old, dict) and now - int(old.get("t", 0) or 0) < 40 * 24 * 3600 and "p" in old:
+                quotes[ident] = old
+            errors.append(ident)
+            log("  taux sans réponse :", ident)
+        else:
+            quotes[ident] = q
+        time.sleep(0.35)
+
+    pol = fetch_policy()
+    for k in POLICY:
+        if k not in pol and isinstance(prev.get("pol"), dict) and k in prev["pol"]:
+            pol[k] = prev["pol"][k]
     news = fetch_news()
     if not news and isinstance(prev, dict):
         news = prev.get("news", [])  # on garde les dernières actualités connues
@@ -284,12 +439,14 @@ def main(path_out):
     data = {
         "updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "q": quotes,
+        "pol": pol,
         "news": news,
         "errors": errors,
     }
     with open(path_out, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
     carried = len([e for e in errors if e in quotes])
+    log("Taux directeurs :", ", ".join(sorted(pol)) or "aucun")
     log("OK : %d cours frais, %d repris, %d actualités" % (fresh, carried, len(news)))
 
 
