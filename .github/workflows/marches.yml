@@ -1,0 +1,40 @@
+# Relais « Marchés mondiaux » — à placer dans .github/workflows/marches.yml
+# Toutes les 10 minutes : récupère cours + actualités puis publie marches.json
+# sur la branche « data » (un seul commit, remplacé à chaque fois).
+name: Mise à jour des marchés
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: marches
+  cancel-in-progress: false
+
+jobs:
+  maj:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Récupérer les cours et les actualités
+        run: python fetch_marches.py out/marches.json
+
+      - name: Publier sur la branche data
+        run: |
+          cd out
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add marches.json
+          git commit -q -m "Marchés $(date -u +%FT%TZ)"
+          git push -q --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
