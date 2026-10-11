@@ -87,7 +87,7 @@ YIELDS = {
     "UK10": ("10uky.b", None, "IRLTLT01GBM156N", None),
 }
 # Taux directeurs (FRED) : FED = fourchette cible haute/basse ; BCE = dépôt / refinancement
-POLICY = {"FED": ("DFEDTARL", "DFEDTARU"), "BCE": ("ECBDFR", "ECBMRRFR")}
+POLICY = {"FED": ("DFEDTARL", "DFEDTARU"), "BCE": ("ECBDFR", "ECBMRRFR"), "BOJ": ("IRSTCB01JPM156N",)}
 
 # Flux RSS (en français). Un flux en panne est simplement ignoré.
 FEEDS = [
@@ -442,8 +442,8 @@ def nyfed_fed():
 
 def fetch_policy():
     out = {}
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        f = {k: ex.submit(fred_series, k, 900) for k in ("DFEDTARL", "DFEDTARU", "ECBDFR", "ECBMRRFR")}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f = {k: ex.submit(fred_series, k, 900) for k in ("DFEDTARL", "DFEDTARU", "ECBDFR", "ECBMRRFR", "IRSTCB01JPM156N")}
         got = {}
         for k, fut in f.items():
             try:
@@ -464,6 +464,11 @@ def fetch_policy():
         mrr = ecb_series("B.U2.EUR.4F.KR.MRR_FR.LEV")
     if dfr and mrr:
         out["BCE"] = {"dfr": dfr[-1][1], "mrr": mrr[-1][1], "since": last_change(dfr), "asof": dfr[-1][0]}
+    boj = got.get("IRSTCB01JPM156N") or []  # Banque du Japon : taux directeur (série mensuelle OCDE via FRED)
+    if boj:
+        out["BOJ"] = {"rate": boj[-1][1], "since": last_change(boj), "asof": boj[-1][0]}
+    else:
+        log("  BoJ : pas de donnée FRED")
     return out
 
 
