@@ -37,6 +37,7 @@ import urllib.request
 import csv
 import io
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
@@ -97,6 +98,9 @@ FEEDS = [
 ]
 NEWS_MAX = 14
 NEWS_PER_FEED = 6
+
+
+STATE = {}
 
 
 def log(*a):
@@ -226,8 +230,12 @@ def stooq_series(sym):
     raw = http_get(url, tries=2)
     if not raw:
         return []
-    rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
+    text = raw.decode("utf-8", "replace")
+    rows = list(csv.reader(io.StringIO(text)))
     if not rows or [c.strip().lower() for c in rows[0][:1]] != ["date"]:
+        if not STATE.get("stooq_logged"):
+            STATE["stooq_logged"] = True
+            log("  stooq : réponse inattendue :", text[:90].replace("\n", " "))
         return []
     out = []
     for r in rows[1:]:
@@ -240,7 +248,7 @@ def stooq_series(sym):
 def fred_series(series_id, days=60):
     """[(date, valeur)] ; ignore les valeurs manquantes (« . »)."""
     start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-    raw = http_get("%s/graph/fredgraph.csv?id=%s&cosd=%s" % (FRED_BASE, series_id, start), tries=2)
+    raw = http_get("%s/graph/fredgraph.csv?id=%s&cosd=%s" % (FRED_BASE, series_id, start), tries=2, timeout=50)
     if not raw:
         return []
     rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
@@ -273,27 +281,128 @@ def yield_quote(pairs, monthly=False):
     return q
 
 
-def fetch_yield(ident):
-    stooq, fred_d, fred_m, yahoo = YIELDS[ident]
-    q = yield_quote(stooq_series(stooq))
-    if q:
-        return q
+ECB_BASE = os.environ.get("ECB_BASE", "https://data-api.ecb.europa.eu").rstrip("/")
+CNBC_URL = os.environ.get("CNBC_URL", "https://quote.cnbc.com/quote-html-webservice/quote.htm")
+CNBC = {"US10": "US10Y", "DE10": "DE10Y-DE", "FR10": "FR10Y-FR", "IT10": "IT10Y-IT",
+        "ES10": "ES10Y-ES", "JP10": "JP10Y-JP", "UK10": "UK10Y-GB"}
+
+
+def ecb_series(key, days=900):
+    """Taux directeurs BCE depuis le portail de données de la BCE (secours de FRED)."""
+    start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    raw = http_get("%s/service/data/FM/%s?startPeriod=%s&format=csvdata" % (ECB_BASE, key, start), tries=2, timeout=40)
+    if not raw:
+        return []
+    out = []
+    for r in csv.DictReader(io.StringIO(raw.decode("utf-8", "replace"))):
+        v = _num(r.get("OBS_VALUE"))
+        d = (r.get("TIME_PERIOD") or "")[:10]
+        if v is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+            out.append((d, v))
+    return out
+
+
+def fetch_cnbc():
+    """Rendements 10 ans (7 pays) en un seul appel, sans clé."""
+    syms = "|".join(list(CNBC.values()) + ["GB10Y-GB"])
+    url = ("%s?symbols=%s&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json&events=1"
+           % (CNBC_URL, urllib.request.quote(syms, safe="|-")))
+    raw = http_get(url, tries=2, timeout=30)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        log("  cnbc : réponse non JSON")
+        return {}
+    rows = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "symbol" in o and "last" in o:
+                rows.append(o)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+    walk(data)
+    by = {str(r["symbol"]): r for r in rows}
+    out = {}
+    for ident, sym in CNBC.items():
+        r = by.get(sym) or (by.get("GB10Y-GB") if ident == "UK10" else None)
+        if not r:
+            continue
+        clean = lambda v: _num(str(v).replace("%", "").replace(",", ""))
+        p = clean(r.get("last"))
+        if p is None or not (0 < p < 30):
+            continue
+        prev = clean(r.get("previous_day_closing"))
+        ch = clean(r.get("change"))
+        d = (p - prev) if prev else ch
+        q = {"p": round(p, 4), "k": "y", "dt": datetime.now(timezone.utc).date().isoformat()}
+        tm = clean(r.get("last_time_msec"))
+        q["t"] = int(tm / 1000) if tm and tm > 1e11 else int(time.time())
+        if d is not None and abs(d) < 1:
+            q["d"] = round(d, 4)
+        out[ident] = q
+    log("  cnbc :", len(out), "taux")
+    return out
+
+
+def yahoo_yield(sym):
+    y = fetch_quote(sym)
+    if not y or y.get("p") is None:
+        return None
+    k = 10.0 if y["p"] > 25 else 1.0  # ^TNX : parfois en dixièmes
+    p = y["p"] / k
+    out = {"p": round(p, 4), "t": y.get("t", int(time.time())), "k": "y", "dt": datetime.now(timezone.utc).date().isoformat()}
+    if "c" in y:
+        out["d"] = round(p - p / (1 + y["c"] / 100.0), 4)
+    if y.get("s"):
+        out["s"] = [round(v / k, 4) for v in y["s"]]
+    return out
+
+
+def fred_fallback(ident):
+    _, fred_d, fred_m, _ = YIELDS[ident]
     if fred_d:
         q = yield_quote(fred_series(fred_d))
         if q:
             return q
-    if yahoo:
-        y = fetch_quote(yahoo)
-        if y and y.get("p") is not None:
-            p = y["p"] / 10.0 if y["p"] > 25 else y["p"]  # ^TNX : parfois en dixièmes
-            k = (10.0 if y["p"] > 25 else 1.0)
-            out = {"p": round(p, 4), "t": y.get("t", int(time.time())), "k": "y", "dt": datetime.now(timezone.utc).date().isoformat()}
-            if "c" in y:
-                out["d"] = round(p - p / (1 + y["c"] / 100.0), 4)
-            if y.get("s"):
-                out["s"] = [round(v / k, 4) for v in y["s"]]
-            return out
     return yield_quote(fred_series(fred_m, days=200), monthly=True)
+
+
+def fetch_all_yields():
+    out = {}
+    for ident, (stooq, _, _, _) in YIELDS.items():
+        q = yield_quote(stooq_series(stooq))
+        if q:
+            out[ident] = q
+    miss = [i for i in YIELDS if i not in out]
+    if miss:
+        c = fetch_cnbc()
+        for i in miss:
+            if i in c:
+                out[i] = c[i]
+    if "US10" not in out and YIELDS["US10"][3]:
+        q = yahoo_yield(YIELDS["US10"][3])
+        if q:
+            out["US10"] = q
+    miss = [i for i in YIELDS if i not in out]
+    if miss:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futs = {i: ex.submit(fred_fallback, i) for i in miss}
+            for i, f in futs.items():
+                try:
+                    q = f.result(timeout=240)
+                except Exception as e:  # noqa: BLE001
+                    log("  fred :", i, repr(e))
+                    q = None
+                if q:
+                    out[i] = q
+    return out
+
 
 
 def last_change(pairs):
@@ -307,16 +416,54 @@ def last_change(pairs):
     return None
 
 
+NYFED_URL = os.environ.get("NYFED_URL", "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/260.json")
+
+
+def nyfed_fed():
+    """Secours FED : fourchette cible publiée avec le taux EFFR par la Fed de New York."""
+    raw = http_get(NYFED_URL, tries=2, timeout=40)
+    if not raw:
+        return None
+    try:
+        rows = json.loads(raw.decode("utf-8", "replace")).get("refRates", [])
+    except (ValueError, AttributeError):
+        return None
+    pts = []
+    for r in rows:
+        lo, hi, d = _num(r.get("targetRateFrom")), _num(r.get("targetRateTo")), str(r.get("effectiveDate", ""))[:10]
+        if lo is not None and hi is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+            pts.append((d, lo, hi))
+    if not pts:
+        return None
+    pts.sort()
+    his = [(d, hi) for d, _, hi in pts]
+    return {"lo": pts[-1][1], "hi": pts[-1][2], "since": last_change(his), "asof": pts[-1][0]}
+
+
 def fetch_policy():
     out = {}
-    for name, (a, b) in POLICY.items():
-        pa, pb = fred_series(a, days=900), fred_series(b, days=900)
-        if not pa or not pb:
-            continue
-        if name == "FED":
-            out[name] = {"lo": pa[-1][1], "hi": pb[-1][1], "since": last_change(pb), "asof": pb[-1][0]}
-        else:
-            out[name] = {"dfr": pa[-1][1], "mrr": pb[-1][1], "since": last_change(pa), "asof": pa[-1][0]}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f = {k: ex.submit(fred_series, k, 900) for k in ("DFEDTARL", "DFEDTARU", "ECBDFR", "ECBMRRFR")}
+        got = {}
+        for k, fut in f.items():
+            try:
+                got[k] = fut.result(timeout=240)
+            except Exception as e:  # noqa: BLE001
+                log("  fred :", k, repr(e))
+                got[k] = []
+    lo, hi = got["DFEDTARL"], got["DFEDTARU"]
+    if lo and hi:
+        out["FED"] = {"lo": lo[-1][1], "hi": hi[-1][1], "since": last_change(hi), "asof": hi[-1][0]}
+    else:
+        f = nyfed_fed()
+        if f:
+            out["FED"] = f
+    dfr, mrr = got["ECBDFR"], got["ECBMRRFR"]
+    if not dfr or not mrr:  # secours : portail de données de la BCE
+        dfr = ecb_series("B.U2.EUR.4F.KR.DFR.LEV")
+        mrr = ecb_series("B.U2.EUR.4F.KR.MRR_FR.LEV")
+    if dfr and mrr:
+        out["BCE"] = {"dfr": dfr[-1][1], "mrr": mrr[-1][1], "since": last_change(dfr), "asof": dfr[-1][0]}
     return out
 
 
@@ -412,8 +559,9 @@ def main(path_out):
 
     fresh = len(SYMBOLS) - len(errors)
 
+    ys = fetch_all_yields()
     for ident in YIELDS:
-        q = fetch_yield(ident)
+        q = ys.get(ident)
         if q is None:
             old = prev_q.get(ident)
             if isinstance(old, dict) and now - int(old.get("t", 0) or 0) < 40 * 24 * 3600 and "p" in old:
@@ -422,7 +570,6 @@ def main(path_out):
             log("  taux sans réponse :", ident)
         else:
             quotes[ident] = q
-        time.sleep(0.35)
 
     pol = fetch_policy()
     for k in POLICY:
