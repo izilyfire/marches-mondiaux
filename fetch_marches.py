@@ -92,7 +92,7 @@ POLICY = {"FED": ("DFEDTARL", "DFEDTARU"), "BCE": ("ECBDFR", "ECBMRRFR"), "BOJ":
 # Flux RSS (en français). Un flux en panne est simplement ignoré.
 FEEDS = [
     ("Le Monde", "https://www.lemonde.fr/economie/rss_full.xml"),
-    ("Les Échos", "https://services.lesechos.fr/rss/les-echos-finance-marches.xml"),
+    ("Le Figaro Éco", "https://www.lefigaro.fr/rss/figaro_economie.xml"),
     ("BFM Business", "https://www.bfmtv.com/rss/economie/"),
     ("Investing.com", "https://fr.investing.com/rss/news.rss"),
 ]
@@ -227,8 +227,12 @@ def stooq_series(sym):
     d2 = datetime.now(timezone.utc).date()
     d1 = d2 - timedelta(days=45)
     url = "%s/q/d/l/?s=%s&i=d&d1=%s&d2=%s" % (STOOQ_BASE, sym, d1.strftime("%Y%m%d"), d2.strftime("%Y%m%d"))
-    raw = http_get(url, tries=2)
+    if STATE.get("stooq_dead"):
+        return []
+    raw = http_get(url, tries=1, timeout=12)
     if not raw:
+        STATE["stooq_dead"] = True  # stooq injoignable depuis ce serveur : inutile d'insister (CNBC prend le relais)
+        log("  stooq injoignable : source ignorée pour cette exécution")
         return []
     text = raw.decode("utf-8", "replace")
     rows = list(csv.reader(io.StringIO(text)))
@@ -248,7 +252,7 @@ def stooq_series(sym):
 def fred_series(series_id, days=60):
     """[(date, valeur)] ; ignore les valeurs manquantes (« . »)."""
     start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-    raw = http_get("%s/graph/fredgraph.csv?id=%s&cosd=%s" % (FRED_BASE, series_id, start), tries=2, timeout=50)
+    raw = http_get("%s/graph/fredgraph.csv?id=%s&cosd=%s" % (FRED_BASE, series_id, start), tries=1, timeout=25)
     if not raw:
         return []
     rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
@@ -419,6 +423,32 @@ def last_change(pairs):
 NYFED_URL = os.environ.get("NYFED_URL", "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/260.json")
 
 
+# Dernier taux connu de la Banque du Japon, utilisé UNIQUEMENT si aucune source en ligne ne répond.
+# À mettre à jour après chaque décision de la BoJ (rate = taux directeur en %, asof = date de la réunion).
+BOJ_MANUAL = {"rate": 1.0, "since": None, "asof": "2026-07-31"}
+
+
+def bis_series(area, days=900):
+    """Taux directeur d'une banque centrale (BRI, dataflow WS_CBPOL) -> [(date, valeur)], ou []."""
+    url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/D.%s?lastNObservations=%d&format=csv" % (area, days)
+    raw = http_get(url, tries=1, timeout=25)
+    if not raw:
+        return []
+    try:
+        rows = list(csv.reader(io.StringIO(raw.decode("utf-8", "replace"))))
+        head = [c.strip().upper() for c in rows[0]]
+        it, iv = head.index("TIME_PERIOD"), head.index("OBS_VALUE")
+    except (ValueError, IndexError):
+        return []
+    out = []
+    for r in rows[1:]:
+        v = _num(r[iv]) if len(r) > iv else None
+        if v is not None and len(r) > it and re.match(r"^\d{4}-\d{2}-\d{2}$", r[it]):
+            out.append((r[it], v))
+    out.sort()
+    return out
+
+
 def nyfed_fed():
     """Secours FED : fourchette cible publiée avec le taux EFFR par la Fed de New York."""
     raw = http_get(NYFED_URL, tries=2, timeout=40)
@@ -465,10 +495,13 @@ def fetch_policy():
     if dfr and mrr:
         out["BCE"] = {"dfr": dfr[-1][1], "mrr": mrr[-1][1], "since": last_change(dfr), "asof": dfr[-1][0]}
     boj = got.get("IRSTCB01JPM156N") or []  # Banque du Japon : taux directeur (série mensuelle OCDE via FRED)
+    if not boj:
+        boj = bis_series("JP")  # secours : base des taux directeurs de la BRI (quotidienne)
     if boj:
         out["BOJ"] = {"rate": boj[-1][1], "since": last_change(boj), "asof": boj[-1][0]}
     else:
-        log("  BoJ : pas de donnée FRED")
+        log("  BoJ : FRED et BRI injoignables, valeur de référence utilisée (", BOJ_MANUAL["asof"], ")")
+        out["BOJ"] = dict(BOJ_MANUAL, ref=True)
     return out
 
 
