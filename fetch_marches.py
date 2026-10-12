@@ -879,6 +879,100 @@ def fetch_news():
     return uniq[:NEWS_MAX]
 
 
+# Dividendes des 24 derniers mois (calendrier du tableau de bord) -> divs.json
+# --------------------------------------------------------------------------
+def previous_json(path, name):
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if repo:
+        raw = http_get("https://raw.githubusercontent.com/%s/data/%s" % (repo, name), tries=1, timeout=20)
+        if raw:
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except ValueError:
+                pass
+    return {}
+
+
+def fetch_divs(symbol):
+    """-> (devise, [[jour_epoch, montant], ...]) ou None si Yahoo ne répond pas."""
+    path = "/v8/finance/chart/%s?interval=1mo&range=2y&events=div" % urllib.request.quote(symbol, safe="")
+    for base in (YAHOO_BASE, YAHOO_ALT):
+        raw = http_get(base + path, tries=2)
+        if not raw:
+            continue
+        try:
+            res = json.loads(raw.decode("utf-8", "replace"))["chart"]["result"][0]
+            cur = (res.get("meta") or {}).get("currency")
+            evs = (res.get("events") or {}).get("dividends") or {}
+        except (ValueError, KeyError, IndexError, TypeError):
+            continue
+        if not cur:
+            continue
+        rows = []
+        for e in evs.values():
+            try:
+                rows.append([int(e["date"]) // 86400, float(e["amount"])])
+            except (KeyError, TypeError, ValueError):
+                pass
+        rows.sort()
+        return cur, rows
+    return None
+
+
+def write_divs(path_d):
+    """Dividendes par titre, convertis en euros (jamais bloquant, fichier toujours réécrit)."""
+    try:
+        old = previous_json(path_d, "divs.json")
+        old_d = old.get("d", {}) if isinstance(old, dict) else {}
+        fx = {"EUR": 1.0}
+        for cur, pair in FX_PAIRS.items():
+            q = fetch_quote(pair)
+            if q and q.get("p"):
+                fx[cur] = q["p"]
+            time.sleep(0.2)
+
+        def one(sym):
+            r = fetch_divs(sym)
+            if not r:
+                return sym, None
+            cur, rows = r
+            if cur == "GBp":
+                cur, rows = "GBP", [[d, a / 100.0] for d, a in rows]
+            rate = fx.get(cur)
+            if not rate:
+                return sym, None
+            return sym, [[d, round(a / rate, 4)] for d, a in rows]
+
+        syms = [s for s in QUOTE_SYMBOLS if not s.endswith("=X")]
+        out, ok, failed = {}, 0, []
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for sym, rows in ex.map(one, syms):
+                if rows is not None:
+                    out[sym] = rows  # liste vide = titre sans dividende
+                    ok += 1
+                elif sym in old_d:
+                    out[sym] = old_d[sym]
+                else:
+                    failed.append(sym)
+        if failed:
+            log("Dividendes sans réponse :", ", ".join(failed))
+        if not out:
+            log("Dividendes : rien récupéré, aucun fichier écrit.")
+            return
+        data = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "d": out}
+        with open(path_d, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        log("Dividendes : %d/%d titres à jour" % (ok, len(syms)))
+    except Exception as e:
+        log("Dividendes : erreur", repr(e))
+
+
 # --------------------------------------------------------------------------
 def main(path_out):
     os.makedirs(os.path.dirname(os.path.abspath(path_out)), exist_ok=True)
@@ -924,6 +1018,7 @@ def main(path_out):
     write_history(os.path.join(os.path.dirname(os.path.abspath(path_out)), "hist.json"))
     write_quotes(os.path.join(os.path.dirname(os.path.abspath(path_out)), "quotes.json"))
     write_insee(os.path.join(os.path.dirname(os.path.abspath(path_out)), "insee.json"))
+    write_divs(os.path.join(os.path.dirname(os.path.abspath(path_out)), "divs.json"))
 
     if fresh == 0:
         log("Aucun cours récupéré : le fichier précédent est conservé.")
