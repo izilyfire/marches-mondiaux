@@ -212,6 +212,87 @@ def previous_file(path_out):
 
 
 # --------------------------------------------------------------------------
+# Historique des ETF de référence (tableau de bord : « portefeuille vs marchés »)
+# --------------------------------------------------------------------------
+# iShares MSCI World Swap PEA (WPEA) et iShares S&P 500 Swap PEA (SPEA), cotés à Paris.
+# Si Yahoo ne répond pas pour le premier symbole, on essaie un ETF équivalent.
+HIST_SYMBOLS = {
+    "WPEA": ["WPEA.PA", "EWLD.PA", "IWDA.AS"],
+    "SPEA": ["SPEA.PA", "ESE.PA", "CSPX.AS"],
+}
+
+
+def fetch_hist_one(symbols):
+    """5 ans de clôtures quotidiennes -> {"s": symbole, "d": [jours], "v": [cours]} ou None."""
+    for sym in symbols:
+        path = "/v8/finance/chart/%s?interval=1d&range=5y" % urllib.request.quote(sym, safe="")
+        for base in (YAHOO_BASE, YAHOO_ALT):
+            raw = http_get(base + path, tries=2, timeout=30)
+            if not raw:
+                continue
+            try:
+                res = json.loads(raw.decode("utf-8", "replace"))["chart"]["result"][0]
+                ts = res["timestamp"]
+                cl = res["indicators"]["quote"][0]["close"]
+            except (ValueError, KeyError, IndexError, TypeError):
+                continue
+            days, vals = [], []
+            for t, c in zip(ts, cl):
+                if not isinstance(c, (int, float)) or c <= 0:
+                    continue
+                d = int(t // 86400)
+                if days and d <= days[-1]:
+                    continue
+                days.append(d)
+                vals.append(round(float(c), 4))
+            if len(days) > 100:
+                return {"s": sym, "d": days, "v": vals}
+        log("  historique indisponible :", sym)
+    return None
+
+
+def previous_hist(path_hist):
+    if os.path.exists(path_hist):
+        try:
+            with open(path_hist, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if repo:
+        raw = http_get("https://raw.githubusercontent.com/%s/data/hist.json" % repo, tries=1, timeout=20)
+        if raw:
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except ValueError:
+                pass
+    return {}
+
+
+def write_history(path_hist):
+    """Écrit hist.json (jamais bloquant : en cas d'échec on garde l'ancien fichier)."""
+    try:
+        old = previous_hist(path_hist)
+        old_h = old.get("h", {}) if isinstance(old, dict) else {}
+        h = {}
+        for key, syms in HIST_SYMBOLS.items():
+            one = fetch_hist_one(syms)
+            if one is None and isinstance(old_h.get(key), dict):
+                one = old_h[key]  # dernier historique connu
+            if one is not None:
+                h[key] = one
+        if not h:
+            log("Historique : aucun ETF de référence récupéré.")
+            return
+        out = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "h": h}
+        with open(path_hist, "w", encoding="utf-8") as f:
+            json.dump(out, f, separators=(",", ":"))
+        log("Historique : %s" % ", ".join("%s (%d jours, %s)" % (k, len(v["d"]), v.get("s", "?")) for k, v in h.items()))
+    except Exception as e:  # ne doit jamais faire échouer la mise à jour des cours
+        log("Historique : erreur", repr(e))
+
+
+# --------------------------------------------------------------------------
 # Taux 10 ans et taux directeurs (Stooq / FRED, sans clé)
 # --------------------------------------------------------------------------
 def _num(x):
@@ -616,6 +697,8 @@ def main(path_out):
     news = fetch_news()
     if not news and isinstance(prev, dict):
         news = prev.get("news", [])  # on garde les dernières actualités connues
+
+    write_history(os.path.join(os.path.dirname(os.path.abspath(path_out)), "hist.json"))
 
     if fresh == 0:
         log("Aucun cours récupéré : le fichier précédent est conservé.")
