@@ -295,7 +295,7 @@ def write_history(path_hist):
 # --------------------------------------------------------------------------
 # Cours des titres et ETF du catalogue (autocomplétion du tableau de bord) -> quotes.json
 # --------------------------------------------------------------------------
-QUOTE_SYMBOLS = ["WPEA.PA", "SPEA.PA", "CW8.PA", "EWLD.PA", "PSP5.PA", "PE500.PA", "PUST.PA", "PAEEM.PA", "PTPXE.PA", "500.PA", "MEUD.PA", "CAC.PA", "ESE.PA", "IWDA.AS", "XDWD.DE", "VWCE.DE", "VWRL.AS", "CSPX.AS", "VUSA.AS", "EQQQ.DE", "CNDX.AS", "EIMI.AS", "GOLD.PA", "MC.PA", "OR.PA", "RMS.PA", "TTE.PA", "SAN.PA", "AIR.PA", "BNP.PA", "ACA.PA", "GLE.PA", "CAP.PA", "SU.PA", "DG.PA", "AI.PA", "ENGI.PA", "ORA.PA", "VIE.PA", "DSY.PA", "STM.PA", "SAF.PA", "KER.PA", "BN.PA", "RI.PA", "HO.PA", "CA.PA", "ML.PA", "SGO.PA", "PUB.PA", "VIV.PA", "CS.PA", "ASML.AS", "SAP.DE", "SIE.DE", "ALV.DE", "NOVO-B.CO", "NESN.SW", "ROG.SW", "NOVN.SW", "SHEL.L", "7203.T", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "NFLX", "KO", "PEP", "WMT", "PG", "COST", "MCD", "NKE", "DIS", "JPM", "V", "MA", "BRK-B", "JNJ", "LLY", "PFE", "UNH", "XOM", "CVX", "AVGO", "AMD", "ORCL", "NEE", "TSM", "BABA"]
+QUOTE_SYMBOLS = ["WPEA.PA", "SPEA.PA", "DCAM.PA", "EWLD.PA", "PSP5.PA", "PE500.PA", "PUST.PA", "PANX.PA", "PAEEM.PA", "PTPXE.PA", "PCEU.PA", "CW8.PA", "500.PA", "ANX.PA", "MEUD.PA", "MSE.PA", "CAC.PA", "RS2K.PA", "BNK.PA", "ESE.PA", "GOLD.PA", "IWDA.AS", "EUNL.DE", "SSAC.L", "CSPX.AS", "SXR8.DE", "IUSA.AS", "CNDX.AS", "SXRV.DE", "EIMI.AS", "IMEU.AS", "IJPA.AS", "SXRT.DE", "EXSA.DE", "INRG.L", "IDVY.AS", "VWCE.DE", "VWRL.AS", "VWRA.L", "VUSA.AS", "VUAA.DE", "VHYL.AS", "VEUR.AS", "VFEM.AS", "VJPN.AS", "EQQQ.DE", "XDWD.DE", "XMME.DE", "SPYY.DE", "SGLD.L", "4GLD.DE", "SPY", "QQQ", "VOO", "VTI", "SCHD", "VYM", "JEPI", "GLD", "SLV", "TLT", "ARKK", "AC.PA", "AI.PA", "AIR.PA", "MT.AS", "CS.PA", "BNP.PA", "EN.PA", "BVI.PA", "CAP.PA", "CA.PA", "ACA.PA", "BN.PA", "DSY.PA", "EDEN.PA", "FGR.PA", "ENGI.PA", "EL.PA", "ERF.PA", "ENX.PA", "RMS.PA", "KER.PA", "LR.PA", "OR.PA", "MC.PA", "ML.PA", "ORA.PA", "RI.PA", "PUB.PA", "RNO.PA", "SAF.PA", "SGO.PA", "SAN.PA", "SU.PA", "GLE.PA", "STLAP.PA", "STMPA.PA", "HO.PA", "TTE.PA", "URW.PA", "VIE.PA", "DG.PA", "ADP.PA", "AF.PA", "ALO.PA", "ATE.PA", "ALTA.PA", "AMUN.PA", "APAM.AS", "ARG.PA", "AKE.PA", "ATO.PA", "AYV.PA", "BEN.PA", "BB.PA", "BIM.PA", "BOL.PA", "CARM.PA", "CLARI.PA", "COFA.PA", "COV.PA", "AM.PA", "DBG.PA", "ELIOR.PA", "ELIS.PA", "EMEIS.PA", "ERA.PA", "ES.PA", "RF.PA", "ETL.PA", "FDJ.PA", "FNAC.PA", "FRVIA.PA", "GFC.PA", "GET.PA", "GTT.PA", "ICAD.PA", "IDL.PA", "NK.PA", "ITP.PA", "IPN.PA", "IPS.PA", "DEC.PA", "LI.PA", "MAU.PA", "MEDCL.PA", "MERY.PA", "MRN.PA", "MMT.PA", "NEOEN.PA", "NEX.PA", "NXI.PA", "POM.PA", "PLNW.PA", "PLX.PA", "RCO.PA", "RXL.PA", "RBT.PA", "RUI.PA", "SK.PA", "DIM.PA", "SCR.PA", "SESG.PA", "SW.PA", "SOI.PA", "SOLB.BR", "SOP.PA", "SPIE.PA", "TE.PA", "TEP.PA", "TFI.PA", "TKO.PA", "TRI.PA", "UBI.PA", "FR.PA", "VK.PA", "VLA.PA", "VRLA.PA", "VCT.PA", "VIRP.PA", "VIRI.PA", "VIV.PA", "VU.PA", "MF.PA", "WLN.PA", "SAP.DE", "SIE.DE", "ALV.DE", "ADS.DE", "BAS.DE", "BAYN.DE", "BEI.DE", "BMW.DE", "BNR.DE", "CBK.DE", "CON.DE", "DTG.DE", "DBK.DE", "DB1.DE", "DHL.DE", "DTE.DE", "EOAN.DE", "FRE.DE", "HEI.DE", "HEN3.DE", "IFX.DE", "MBG.DE", "MRK.DE", "MTX.DE", "MUV2.DE", "P911.DE", "RHM.DE", "RWE.DE", "ENR.DE", "SHL.DE", "SY1.DE", "VOW3.DE", "VNA.DE", "ZAL.DE", "QIA.DE", "ASML.AS", "ADYEN.AS", "AD.AS", "AKZA.AS", "ASM.AS", "BESI.AS", "HEIA.AS", "INGA.AS", "JDEP.AS", "KPN.AS", "NN.AS", "PHIA.AS", "PRX.AS", "RAND.AS", "WKL.AS", "UMG.AS", "UNA.AS", "RACE.MI", "ABI.BR", "KBC.BR", "UCB.BR", "UMI.BR", "AGS.BR", "SOF.BR", "GBLB.BR", "ARGX.BR", "ITX.MC", "SAN.MC", "BBVA.MC", "IBE.MC", "TEF.MC", "CABK.MC", "REP.MC", "AMS.MC", "FER.MC", "CLNX.MC", "NTGY.MC", "AENA.MC", "ELE.MC", "RED.MC", "GRF.MC", "ACS.MC", "SAB.MC", "BKT.MC", "ANA.MC", "IDR.MC", "ENEL.MI", "ENI.MI", "ISP.MI", "UCG.MI", "G.MI", "PRY.MI", "MONC.MI", "LDO.MI", "TRN.MI", "SRG.MI", "PST.MI", "MB.MI", "BAMI.MI", "BPE.MI", "CPR.MI", "AMP.MI", "DIA.MI", "NEXI.MI", "REC.MI", "PIRC.MI", "BC.MI", "TEN.MI", "STLAM.MI", "NESN.SW", "ROG.SW", "NOVN.SW", "UBSG.SW", "ZURN.SW", "CFR.SW", "ABBN.SW", "LONN.SW", "NOVO-B.CO", "SHEL.L", "AZN.L", "HSBA.L", "BP.L", "DGE.L", "GSK.L", "RIO.L", "BATS.L", "7203.T", "6758.T", "7974.T", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "BRK-B", "AVGO", "LLY", "JPM", "V", "MA", "UNH", "XOM", "JNJ", "PG", "HD", "COST", "ABBV", "MRK", "CVX", "KO", "PEP", "BAC", "WMT", "ORCL", "CRM", "ADBE", "NFLX", "AMD", "TMO", "ACN", "MCD", "CSCO", "ABT", "DIS", "TXN", "WFC", "INTC", "QCOM", "VZ", "PM", "INTU", "IBM", "GE", "CAT", "AMGN", "NOW", "UBER", "BKNG", "GS", "MS", "RTX", "LOW", "HON", "UNP", "T", "NKE", "PFE", "SBUX", "LMT", "DE", "BLK", "AXP", "PYPL", "PLTR", "PANW", "CRWD", "MU", "AMAT", "COIN", "SPOT", "SNOW", "UPS", "GILD", "BMY", "CVS", "TMUS", "CMCSA", "MO", "TGT", "F", "GM", "O", "AMT", "NEE", "DUK", "SO", "AEP", "MDLZ", "CL", "KMB", "GIS", "LRCX", "KLAC", "ANET", "MRVL", "NET", "DDOG", "SHOP", "ABNB", "ARM", "NVO", "TSM", "BABA", "SONY", "TM", "PDD", "JD", "BIDU"]
 FX_PAIRS = {"USD": "EURUSD=X", "GBP": "EURGBP=X", "CHF": "EURCHF=X", "DKK": "EURDKK=X", "JPY": "EURJPY=X"}
 
 
@@ -329,25 +329,36 @@ def write_quotes(path_q):
                 fx[cur] = q["p"]
             time.sleep(0.2)
         now = int(time.time())
-        out, ok = {}, 0
-        for sym in QUOTE_SYMBOLS:
+        out, ok, failed = {}, 0, []
+
+        def one(sym):
             q = fetch_quote(sym)
-            time.sleep(0.3)
-            if q:
-                cur, p = q.get("u", "EUR"), q["p"]
-                if cur == "GBp":
-                    cur, p = "GBP", p / 100.0
-                rate = fx.get(cur)
-                if rate:
-                    e = {"p": round(p / rate, 4), "t": q.get("t", now)}
-                    if "c" in q:
-                        e["c"] = q["c"]
+            if not q:
+                return sym, None
+            cur, p = q.get("u", "EUR"), q["p"]
+            if cur == "GBp":
+                cur, p = "GBP", p / 100.0
+            rate = fx.get(cur)
+            if not rate:
+                return sym, None
+            e = {"p": round(p / rate, 4), "t": q.get("t", now)}
+            if "c" in q:
+                e["c"] = q["c"]
+            return sym, e
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for sym, e in ex.map(one, QUOTE_SYMBOLS):
+                if e:
                     out[sym] = e
                     ok += 1
                     continue
-            o = old_q.get(sym)
-            if isinstance(o, dict) and now - int(o.get("t", 0) or 0) < 10 * 24 * 3600:
-                out[sym] = o
+                failed.append(sym)
+                o = old_q.get(sym)
+                if isinstance(o, dict) and now - int(o.get("t", 0) or 0) < 10 * 24 * 3600:
+                    out[sym] = o
+        if failed:
+            log("Cours du catalogue sans réponse :", ", ".join(failed))
         if ok == 0:
             log("Cours du catalogue : aucun cours récupéré, fichier précédent conservé.")
             return
