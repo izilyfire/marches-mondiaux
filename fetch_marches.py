@@ -293,6 +293,74 @@ def write_history(path_hist):
 
 
 # --------------------------------------------------------------------------
+# Cours des titres et ETF du catalogue (autocomplétion du tableau de bord) -> quotes.json
+# --------------------------------------------------------------------------
+QUOTE_SYMBOLS = ["WPEA.PA", "SPEA.PA", "CW8.PA", "EWLD.PA", "PSP5.PA", "PE500.PA", "PUST.PA", "PAEEM.PA", "PTPXE.PA", "500.PA", "MEUD.PA", "CAC.PA", "ESE.PA", "IWDA.AS", "XDWD.DE", "VWCE.DE", "VWRL.AS", "CSPX.AS", "VUSA.AS", "EQQQ.DE", "CNDX.AS", "EIMI.AS", "GOLD.PA", "MC.PA", "OR.PA", "RMS.PA", "TTE.PA", "SAN.PA", "AIR.PA", "BNP.PA", "ACA.PA", "GLE.PA", "CAP.PA", "SU.PA", "DG.PA", "AI.PA", "ENGI.PA", "ORA.PA", "VIE.PA", "DSY.PA", "STM.PA", "SAF.PA", "KER.PA", "BN.PA", "RI.PA", "HO.PA", "CA.PA", "ML.PA", "SGO.PA", "PUB.PA", "VIV.PA", "CS.PA", "ASML.AS", "SAP.DE", "SIE.DE", "ALV.DE", "NOVO-B.CO", "NESN.SW", "ROG.SW", "NOVN.SW", "SHEL.L", "7203.T", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "NFLX", "KO", "PEP", "WMT", "PG", "COST", "MCD", "NKE", "DIS", "JPM", "V", "MA", "BRK-B", "JNJ", "LLY", "PFE", "UNH", "XOM", "CVX", "AVGO", "AMD", "ORCL", "NEE", "TSM", "BABA"]
+FX_PAIRS = {"USD": "EURUSD=X", "GBP": "EURGBP=X", "CHF": "EURCHF=X", "DKK": "EURDKK=X", "JPY": "EURJPY=X"}
+
+
+def previous_quotes(path_q):
+    if os.path.exists(path_q):
+        try:
+            with open(path_q, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if repo:
+        raw = http_get("https://raw.githubusercontent.com/%s/data/quotes.json" % repo, tries=1, timeout=20)
+        if raw:
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except ValueError:
+                pass
+    return {}
+
+
+def write_quotes(path_q):
+    """Cours en euros de chaque valeur du catalogue (jamais bloquant)."""
+    try:
+        old = previous_quotes(path_q)
+        old_q = old.get("q", {}) if isinstance(old, dict) else {}
+        fx = {"EUR": 1.0}
+        for cur, pair in FX_PAIRS.items():
+            q = fetch_quote(pair)
+            if q and q.get("p"):
+                fx[cur] = q["p"]
+            time.sleep(0.2)
+        now = int(time.time())
+        out, ok = {}, 0
+        for sym in QUOTE_SYMBOLS:
+            q = fetch_quote(sym)
+            time.sleep(0.3)
+            if q:
+                cur, p = q.get("u", "EUR"), q["p"]
+                if cur == "GBp":
+                    cur, p = "GBP", p / 100.0
+                rate = fx.get(cur)
+                if rate:
+                    e = {"p": round(p / rate, 4), "t": q.get("t", now)}
+                    if "c" in q:
+                        e["c"] = q["c"]
+                    out[sym] = e
+                    ok += 1
+                    continue
+            o = old_q.get(sym)
+            if isinstance(o, dict) and now - int(o.get("t", 0) or 0) < 10 * 24 * 3600:
+                out[sym] = o
+        if ok == 0:
+            log("Cours du catalogue : aucun cours récupéré, fichier précédent conservé.")
+            return
+        data = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "q": out}
+        with open(path_q, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        log("Cours du catalogue : %d/%d à jour" % (ok, len(QUOTE_SYMBOLS)))
+    except Exception as e:
+        log("Cours du catalogue : erreur", repr(e))
+
+
+
+# --------------------------------------------------------------------------
 # Taux 10 ans et taux directeurs (Stooq / FRED, sans clé)
 # --------------------------------------------------------------------------
 def _num(x):
@@ -699,6 +767,7 @@ def main(path_out):
         news = prev.get("news", [])  # on garde les dernières actualités connues
 
     write_history(os.path.join(os.path.dirname(os.path.abspath(path_out)), "hist.json"))
+    write_quotes(os.path.join(os.path.dirname(os.path.abspath(path_out)), "quotes.json"))
 
     if fresh == 0:
         log("Aucun cours récupéré : le fichier précédent est conservé.")
