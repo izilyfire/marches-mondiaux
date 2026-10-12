@@ -372,6 +372,150 @@ def write_quotes(path_q):
 
 
 # --------------------------------------------------------------------------
+# Patrimoine des ménages (Insee) -> insee.json  (déciles début N, mis à jour quand l'Insee republie)
+# --------------------------------------------------------------------------
+INSEE_XLSX = "https://www.insee.fr/fr/statistiques/fichier/2388851/reve-patrim-decile.xlsx"
+INSEE_KEYS = ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "P95", "P99"]
+
+
+def _label_key(text):
+    """Reconnaît « D1 », « 1er décile (D1) », « Médiane », « P95 », « 95e centile »... -> clé ou None."""
+    import re
+    s = text.strip().upper().replace("É", "E").replace("\u00a0", " ")
+    m = re.search(r"\bD\s?([1-9])\b", s)
+    if m:
+        return "D" + m.group(1)
+    if "MEDIANE" in s:
+        return "D5"
+    m = re.search(r"\bP\s?(95|99)\b", s) or re.search(r"\b(95|99)\s?(?:E|EME)?\s*(?:CENTILE|PERCENTILE)", s)
+    if m:
+        return "P" + m.group(1)
+    m = re.search(r"\b([1-9])\s?(?:ER|E|EME)\s+DECILE", s)
+    if m:
+        return "D" + m.group(1)
+    return None
+
+
+def parse_insee_xlsx(raw):
+    """Lit le classeur Insee (zip + XML, sans dépendance) -> {"year", "brut":[11], "net":[11]} ou None."""
+    import re, zipfile, io
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+            shared.append("".join(x.text or "" for x in si.iter("{%s}t" % ns["m"])))
+    best = None
+    for name in sorted(n for n in z.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")):
+        grid = {}
+        for c in ET.fromstring(z.read(name)).iter("{%s}c" % ns["m"]):
+            ref = c.get("r", "")
+            mm = re.match(r"([A-Z]+)(\d+)", ref)
+            if not mm:
+                continue
+            col = 0
+            for ch in mm.group(1):
+                col = col * 26 + ord(ch) - 64
+            row = int(mm.group(2))
+            v = c.find("m:v", ns)
+            if c.get("t") == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter("{%s}t" % ns["m"]))
+            elif v is None or v.text is None:
+                continue
+            elif c.get("t") == "s":
+                val = shared[int(v.text)]
+            else:
+                try:
+                    val = float(v.text)
+                except ValueError:
+                    val = v.text
+            grid[(row, col)] = val
+        res = _extract_deciles(grid)
+        if res:
+            texts = " ".join(str(v) for v in grid.values() if isinstance(v, str))
+            ym = re.findall(r"(?:d[ée]but|debut|au 1er janvier)\s+(20\d\d)", texts, re.I) or re.findall(r"\b(20[12]\d)\b", texts)
+            res["year"] = int(max(ym, key=int)) if ym else None
+            best = res
+            break
+    return best
+
+
+def _extract_deciles(grid):
+    rows = sorted({r for r, _ in grid})
+    cols = sorted({c for _, c in grid})
+    # repère des colonnes/lignes « brut » et « net »
+    def find_axis(word):
+        for (r, c), v in grid.items():
+            if isinstance(v, str) and word in v.lower():
+                return r, c
+        return None
+    pb, pn = find_axis("brut"), find_axis("net")
+    out = {}
+    for layout in ("rows", "cols"):
+        found = {}
+        for (r, c), v in grid.items():
+            if not isinstance(v, str):
+                continue
+            k = _label_key(v)
+            if not k or k in found:
+                continue
+            if layout == "rows":
+                nums = [(cc, grid[(r, cc)]) for cc in cols if cc > c and isinstance(grid.get((r, cc)), float)]
+            else:
+                nums = [(rr, grid[(rr, c)]) for rr in rows if rr > r and isinstance(grid.get((rr, c)), float)]
+            if len(nums) >= 2:
+                found[k] = nums[:2]
+        if all(k in found for k in INSEE_KEYS):
+            first_is_brut = True
+            if pb and pn:
+                first_is_brut = (pb[1] < pn[1]) if layout == "rows" else (pb[0] < pn[0])
+            brut, net = [], []
+            for k in INSEE_KEYS:
+                a, b = found[k][0][1], found[k][1][1]
+                brut.append(a if first_is_brut else b)
+                net.append(b if first_is_brut else a)
+            out = {"brut": brut, "net": net}
+            break
+    if not out:
+        return None
+    for arr in (out["brut"], out["net"]):
+        if any(arr[i] <= arr[i - 1] for i in range(1, 11)) or not (20000 < arr[4] < 2000000):
+            return None
+    out["brut"] = [int(round(x)) for x in out["brut"]]
+    out["net"] = [int(round(x)) for x in out["net"]]
+    return out
+
+
+def write_insee(path_i):
+    """Ne remplace insee.json que si le fichier Insee est lu et cohérent (jamais bloquant)."""
+    try:
+        raw = http_get(INSEE_XLSX, tries=2, timeout=40)
+        res = parse_insee_xlsx(raw) if raw else None
+        if not res:
+            log("Insee : fichier illisible ou inchangé, version précédente conservée.")
+            return
+        old = {}
+        repo = os.environ.get("GITHUB_REPOSITORY")
+        if repo:
+            r = http_get("https://raw.githubusercontent.com/%s/data/insee.json" % repo, tries=1, timeout=15)
+            if r:
+                try:
+                    old = json.loads(r.decode("utf-8"))
+                except ValueError:
+                    old = {}
+        pub = old.get("pub") if old.get("brut") == res["brut"] and old.get("net") == res["net"] else None
+        data = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "year": res.get("year"),
+                "pub": pub or datetime.now(timezone.utc).strftime("%Y-%m-%d"), "brut": res["brut"], "net": res["net"]}
+        with open(path_i, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        log("Insee : médiane brute %s, nette %s (début %s)" % (res["brut"][4], res["net"][4], res.get("year")))
+    except Exception as e:
+        log("Insee : erreur", repr(e))
+
+
+
+# --------------------------------------------------------------------------
 # Taux 10 ans et taux directeurs (Stooq / FRED, sans clé)
 # --------------------------------------------------------------------------
 def _num(x):
@@ -779,6 +923,7 @@ def main(path_out):
 
     write_history(os.path.join(os.path.dirname(os.path.abspath(path_out)), "hist.json"))
     write_quotes(os.path.join(os.path.dirname(os.path.abspath(path_out)), "quotes.json"))
+    write_insee(os.path.join(os.path.dirname(os.path.abspath(path_out)), "insee.json"))
 
     if fresh == 0:
         log("Aucun cours récupéré : le fichier précédent est conservé.")
